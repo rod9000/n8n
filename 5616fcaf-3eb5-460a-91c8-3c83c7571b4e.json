@@ -1,0 +1,977 @@
+{
+  "name": "jairomec",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst data = body.data || body;\nconst message = data.message || {};\n\nconst phone = (data.key?.remoteJid || body.remoteJid || '').replace('@s.whatsapp.net', '').replace('@c.us', '');\nconst pushName = data.pushName || body.pushName || 'Cliente';\nconst messageId = data.key?.id || body.messageId || '';\n\n// Detecta tipo de mensagem\nconst isAudio = !!(message.audioMessage || message.pttMessage);\nconst isImage = !!(message.imageMessage);\nconst isDocument = !!(message.documentMessage);\nconst isMedia = isImage || isDocument;\n\n// Captura base64 e mimetype de imagem/documento\n// ⚠️ Na Evolution API, o base64 da imagem vem em message.base64 (raiz do message)\nconst mediaBase64 = (isImage || isDocument) ? (message.base64 || data.base64 || body.base64 || '') : '';\nconst mediaMimeType = message.imageMessage?.mimetype ||\n                     message.documentMessage?.mimetype || 'image/jpeg';\nconst mediaCaption = message.imageMessage?.caption ||\n                     message.documentMessage?.caption || '';\nconst mediaFileName = message.documentMessage?.fileName || '';\n\n// Captura base64 de áudio\n// Só captura base64 de áudio se for mensagem de áudio\nconst audioBase64 = isAudio ? (message.base64 || data.base64 || body.base64 || message.audioMessage?.base64 || '') : '';\nconst audioUrl = message.audioMessage?.url || message.pttMessage?.url || '';\n\nconst text = message.conversation || message.extendedTextMessage?.text || body.text || '';\n\nif (!phone || phone.includes('-')) {\n  throw new Error('Mensagem ignorada: vazia ou de grupo');\n}\n\nreturn [{\n  json: {\n    phone,\n    text,\n    messageId,\n    pushName,\n    isAudio,\n    isImage,\n    isDocument,\n    isMedia,\n    audioUrl,\n    audioBase64,\n    mediaBase64,\n    mediaMimeType,\n    mediaCaption,\n    mediaFileName\n  }\n}];"
+      },
+      "id": "81c22d38-9aae-4407-85e5-9e277388cca4",
+      "name": "Extrair Dados da Mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6592,
+        96
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isAudio }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "bb0014c0-7a5c-484e-a42a-8dc04a0ddd7b",
+      "name": "É Áudio?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -6368,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "audioBase64",
+        "options": {
+          "fileName": "audio.mp3",
+          "mimeType": "audio/mpeg"
+        }
+      },
+      "id": "88bb5b24-fb2b-47f0-a445-5e1a55734c67",
+      "name": "Convert to File1",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        -6144,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "options": {
+          "language": "pt"
+        }
+      },
+      "id": "c7212538-8951-4e09-8df2-eb0daf692f24",
+      "name": "Whisper Transcrever",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        -5920,
+        32
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ID_CREDENCIAL_OPENAI",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const whisperData = $input.first().json;\nconst dadosOriginais = $('Extrair Dados da Mensagem').item.json;\nconst textoTranscrito = whisperData?.text || whisperData?.transcription || '';\nreturn [{\n  json: {\n    phone: dadosOriginais.phone,\n    pushName: dadosOriginais.pushName,\n    text: textoTranscrito,\n    messageId: dadosOriginais.messageId,\n    isAudio: true\n  }\n}];"
+      },
+      "id": "193b665a-1569-444a-8ad5-e78dfcc47a7e",
+      "name": "Unificar Transcrição",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5696,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isMedia }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "49785a26-965d-4287-bc1b-3afb2d8bd155",
+      "name": "É Imagem ou PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -6368,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const dados = $input.first().json;\nconst mediaBase64 = dados.mediaBase64 || '';\nconst mediaMimeType = dados.mediaMimeType || 'image/jpeg';\nconst mediaCaption = dados.mediaCaption || '';\nconst mediaFileName = dados.mediaFileName || '';\nconst isDocument = dados.isDocument;\n\nconst isPDF = isDocument && (mediaMimeType === 'application/pdf' || (mediaFileName || '').toLowerCase().endsWith('.pdf'));\n\nlet userContent;\nif (isPDF) {\n  userContent = [\n    { type: 'file', file: { filename: mediaFileName || 'doc.pdf', file_data: `data:application/pdf;base64,${mediaBase64}` } },\n    { type: 'text', text: mediaCaption ? `Cliente enviou arquivo com mensagem: \"${mediaCaption}\". Analise e descreva o que vê relacionado ao veículo ou câmbio.` : 'Analise este documento e descreva o que vê relacionado ao veículo ou câmbio automático.' }\n  ];\n} else {\n  userContent = [\n    { type: 'image_url', image_url: { url: `data:${mediaMimeType};base64,${mediaBase64}`, detail: 'high' } },\n    { type: 'text', text: mediaCaption ? `Cliente enviou imagem com mensagem: \"${mediaCaption}\". Descreva o que vê relacionado ao veículo ou câmbio automático.` : 'Analise esta imagem de veículo/câmbio e descreva o que vê (problema visível, componente, luz de aviso no painel, vazamento, etc.).' }\n  ];\n}\n\nconst messages = [\n  {\n    role: 'system',\n    content: 'Você é um técnico especialista em câmbio automático analisando imagens. Descreva tecnicamente o que está visível: luzes de aviso no painel, componentes de câmbio, vazamentos, sinais de desgaste. Seja específico e objetivo. Responda em português.'\n  },\n  { role: 'user', content: userContent }\n];\n\nreturn [{ json: { ...dados, visionBodyStr: JSON.stringify({ model: 'gpt-4o', max_tokens: 500, messages }) } }];"
+      },
+      "id": "5d1bafe8-8586-4f40-95ed-cd36c5aabd84",
+      "name": "Preparar Vision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6144,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.visionBodyStr }}",
+        "options": {}
+      },
+      "id": "1c98d5cf-1739-4c04-99a3-a3ef694ca345",
+      "name": "GPT-4o Vision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -5920,
+        336
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ID_CREDENCIAL_OPENAI",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const visionData = $input.first().json;\nconst dadosOriginais = $('Extrair Dados da Mensagem').item.json;\nconst rawContent = visionData?.choices?.[0]?.message?.content || '';\n\nconst textoEnriquecido = `[CLIENTE ENVIOU ${dadosOriginais.isDocument ? 'ARQUIVO' : 'IMAGEM'}]\\nAnálise técnica: ${rawContent}${dadosOriginais.mediaCaption ? `\\nMensagem junto à imagem: \"${dadosOriginais.mediaCaption}\"` : ''}`;\n\nreturn [{\n  json: {\n    phone: dadosOriginais.phone,\n    pushName: dadosOriginais.pushName,\n    text: textoEnriquecido,\n    messageId: dadosOriginais.messageId,\n    isAudio: false,\n    isImage: dadosOriginais.isImage,\n    isDocument: dadosOriginais.isDocument,\n    isMedia: true\n  }\n}];"
+      },
+      "id": "d4e2ba2d-32c8-4a92-9d2b-fa3867ad747f",
+      "name": "Unificar Análise Vision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5696,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let dadosFinal;\ntry {\n  dadosFinal = $('Unificar Análise Vision').item.json;\n  if (dadosFinal) return [{ json: dadosFinal }];\n} catch(e) {}\ntry {\n  dadosFinal = $('Unificar Transcrição').item.json;\n  if (dadosFinal) return [{ json: dadosFinal }];\n} catch(e) {}\ndadosFinal = $('Extrair Dados da Mensagem').item.json;\nreturn [{ json: dadosFinal }];"
+      },
+      "id": "3276b59f-f19b-4ee6-bd29-9b42188de6aa",
+      "name": "Merge Texto+Audio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5472,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/jairomec_clientes",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "telefone",
+              "value": "=eq.{{ $json.phone }}"
+            },
+            {
+              "name": "select",
+              "value": "id,nome,telefone,stage"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8c530ac5-c78e-4796-b96a-1b03c1f42b9f",
+      "name": "Buscar Cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -5248,
+        96
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ Array.isArray($json) ? $json.length : ($json.id ? 1 : 0) }}",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "4b1c9cc8-70ef-490e-9dcf-4ed228f10232",
+      "name": "Cliente Existe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -5024,
+        96
+      ],
+      "notes": "TRUE (saída 0) = NÃO existe, cadastra | FALSE (saída 1) = JÁ existe"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/jairomec_clientes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ nome: $('Merge Texto+Audio').item.json.pushName, telefone: $('Merge Texto+Audio').item.json.phone, stage: 'BOAS_VINDAS' }) }}",
+        "options": {}
+      },
+      "id": "f5df1fd7-6cdc-460f-9194-af25b6696408",
+      "name": "Cadastrar Novo Cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -4800,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const extrair = $('Merge Texto+Audio').item.json;\nlet clienteData;\ntry {\n  const novoResp = $('Cadastrar Novo Cliente').item.json;\n  const arr = Array.isArray(novoResp) ? novoResp : [novoResp];\n  if (arr.length > 0 && arr[0].id) clienteData = arr[0];\n} catch(e) {}\nif (!clienteData) {\n  const existenteResp = $('Buscar Cliente').item.json;\n  const arr = Array.isArray(existenteResp) ? existenteResp : [existenteResp];\n  clienteData = arr.length > 0 ? arr[0] : {};\n}\nreturn [{\n  json: {\n    phone: extrair.phone,\n    pushName: extrair.pushName,\n    userMessage: extrair.text,\n    isAudio: extrair.isAudio || false,\n    isMedia: extrair.isMedia || false,\n    clienteId: clienteData?.id,\n    nomeCliente: clienteData?.nome || extrair.pushName,\n    stage: clienteData?.stage || 'BOAS_VINDAS'\n  }\n}];"
+      },
+      "id": "e12b9d90-dc57-4069-aeee-2989045954aa",
+      "name": "Unificar Dados do Cliente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4576,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/jairomec_mensagens",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "cliente_id",
+              "value": "=eq.{{ $json.clienteId }}"
+            },
+            {
+              "name": "select",
+              "value": "role,conteudo"
+            },
+            {
+              "name": "order",
+              "value": "criado_em.asc"
+            },
+            {
+              "name": "limit",
+              "value": "50"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "54931630-e65c-42fd-a862-e1b9e55aede0",
+      "name": "Buscar Histórico",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -4352,
+        96
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const cliente = $('Unificar Dados do Cliente').item.json;\nconst rawInput = $input.all();\nlet historico = [];\nif (rawInput.length === 1 && Array.isArray(rawInput[0].json)) {\n  historico = rawInput[0].json;\n} else {\n  historico = rawInput.map(i => i.json).filter(i => i && i.role);\n}\n\nconst stage = cliente.stage;\nconst nomeCliente = cliente.nomeCliente || cliente.pushName || 'você';\n\nconst prompts = {\n  BOAS_VINDAS: `Você é Camila da Jairo Mec — especialista em câmbio automático em Belo Horizonte 🔧⚙️\n\nINFORMAÇÕES DA EMPRESA:\n- Especialidade: Câmbio Automático (todas as marcas e modelos)\n- Instagram: @jairomecbh\n- Endereço: Av. Flor de Seda, 969 - Lindéia, Belo Horizonte/MG\n- Horário: Segunda a Sexta das 8h às 18h\n- Atendemos APENAS Belo Horizonte e região\n\nSERVIÇOS:\n- Diagnóstico eletrônico de câmbio automático\n- Revisão e manutenção preventiva\n- Reconstrução completa de câmbio\n- Reparo de mecatrônica e corpo de válvulas\n- Troca de óleo ATF (máquina flush)\n- Câmbio CVT, DSG, PDK e DCT\n- Câmbio para importados premium\n\nPERSONALIDADE:\n- Seja simpática, calorosa e profissional\n- Use o nome do cliente: ${nomeCliente}\n- Use emojis com moderação\n\nINSTRUÇÃO:\nApresente-se como Camila da Jairo Mec, especialistas em câmbio automático em BH, e pergunte em que pode ajudar.\nSe o cliente perguntar sobre orçamento ou mencionar problema: [MOVER_PARA_ATENDIMENTO]\n\nREGRAS:\n- Responda APENAS sobre câmbio automático\n- NUNCA mencione que é virtual ou IA\n- NUNCA mencione o número de telefone proativamente\n- Se o cliente quiser agendar: \"Vou agendar aqui pra você, ${nomeCliente}! 😊 Pode trazer ainda hoje (até as 18h, de segunda a sexta) ou amanhã. A Camila já deixou aqui avisado!\"`,\n\n  ATENDIMENTO: `Você é Camila da Jairo Mec — especialista em câmbio automático em Belo Horizonte 🔧⚙️\n\nINFORMAÇÕES DA EMPRESA:\n- Especialidade: Câmbio Automático (todas as marcas e modelos)\n- Instagram: @jairomecbh\n- Endereço: Av. Flor de Seda, 969 - Lindéia, Belo Horizonte/MG\n- Horário: Segunda a Sexta das 8h às 18h\n- Atendemos APENAS Belo Horizonte e região\n\n⚠️ REGRAS ABSOLUTAS:\n\n1. ORÇAMENTOS: NUNCA forneça valores ou estimativas de preço por mensagem.\n   Diga sempre: \"Para um orçamento preciso precisamos avaliar o câmbio do seu carro pessoalmente. Pode trazer de segunda a sexta, das 8h às 18h, que fazemos o orçamento na hora, sem compromisso! 📍 Av. Flor de Seda, 969 - Lindéia, BH 😊\"\n\n2. CARRO NA OFICINA: Se o cliente perguntar sobre o status do carro já na oficina:\n   - Peça a placa: \"Pode me informar a placa do veículo?\"\n   - Após receber a placa, diga: \"Anotei a placa! Vou passar para nossa equipe e entraremos em contato pelo WhatsApp o mais breve possível com uma atualização. ✅\"\n\n3. FORA DE BH: Diga gentilmente: \"No momento atendemos apenas em Belo Horizonte e região. Mas qualquer dúvida técnica sobre câmbio pode perguntar! 😊\"\n\n4. DÚVIDAS TÉCNICAS: Você PODE e DEVE responder sobre câmbio automático. Sempre termine direcionando para a oficina.\n\n5. FOCO: Responda APENAS sobre câmbio automático. Se o cliente perguntar sobre outros assuntos, diga: \"Aqui sou especialista em câmbio automático. Posso te ajudar com alguma dúvida sobre câmbio? 😊\"\n\n6. TELEFONE: Mencione o número (31) 8289-0190 SOMENTE se: o cliente já deixou o carro na oficina, está muito nervoso/irritado, ou é cliente já conhecido. NUNCA mencione proativamente em outros casos.\n\n7. AGENDAMENTO: Quando o cliente demonstrar interesse em trazer o carro ou quiser agendar, diga SEMPRE exatamente isso: \"Vou agendar aqui pra você, ${nomeCliente}! 😊 Pode trazer ainda hoje (até as 18h, de segunda a sexta) ou amanhã. Quando você trazer o carro é importante que você diga que eu agendei pra você, diga que a Camila já agendou pra você e deixou avisado ok!\"\n\nCONHECIMENTO TÉCNICO:\n- Sintomas: solavanco/tranco nas trocas, patinação (motor acelera mas carro não avança), dificuldade de engate, ruídos ao trocar marcha, luz de câmbio no painel, trava em modo emergência\n- Manutenção: troca de óleo ATF a cada 40.000-60.000 km (varia por marca/modelo)\n- CVT: correia/corrente metálica; Honda, Toyota, Nissan, Subaru; sintomas: vibração, chiado, patinação\n- DSG/DCT (VW, BMW, Ford): solavanco em baixa velocidade, especialmente nos primeiros km\n- PDK (Porsche): similar DSG, alta precisão, requer cuidado especial\n- Mecatrônica: quando falha trava em modo emergência ou gera código de falha\n- Marcas atendidas: VW, Chevrolet, Ford, Fiat, Toyota, Honda, Hyundai, BMW, Mercedes, Audi, Land Rover, Kia, Renault, Nissan, Jeep, Mitsubishi, Peugeot, Citroën e mais\n\nPERSONALIDADE:\n- Nome do cliente: ${nomeCliente}\n- Simpática, calorosa, demonstre expertise\n- Sempre termine direcionando para a oficina\n- Use emojis com moderação`\n};\n\nconst systemPrompt = prompts[stage] || prompts['BOAS_VINDAS'];\n\nconst historicoFormatado = historico.length > 0\n  ? '\\n\\n=== HISTÓRICO DA CONVERSA ===\\n' +\n    historico.filter(m => m && m.role).map(m => {\n      const role = m.role === 'assistant' ? 'Camila' : 'Cliente';\n      return `${role}: ${m.conteudo || m.content || ''}`;\n    }).join('\\n') +\n    '\\n=== FIM DO HISTÓRICO ==='\n  : '';\n\nlet novoStage = stage;\nif (stage === 'BOAS_VINDAS') novoStage = 'ATENDIMENTO';\n\nreturn [{\n  json: {\n    phone: cliente.phone,\n    clienteId: cliente.clienteId,\n    nomeCliente,\n    userMessage: cliente.userMessage,\n    stage,\n    novoStage,\n    systemPrompt: systemPrompt + historicoFormatado,\n    mensagensCompletas: [{ role: 'user', content: cliente.userMessage || 'Olá' }]\n  }\n}];"
+      },
+      "id": "f3ef126f-9c8b-4a36-aeee-c5c299bfc879",
+      "name": "Montar Prompt por Stage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4128,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.systemPrompt }}",
+              "role": "system"
+            },
+            {
+              "content": "={{ $json.mensagensCompletas[0].content }}"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1500,
+          "temperature": 0.1
+        }
+      },
+      "id": "c52fc478-da6f-4735-ab97-e3abc2625df5",
+      "name": "GPT-4.1 Mini",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        -3904,
+        96
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ID_CREDENCIAL_OPENAI",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const dadosPrompt = $('Montar Prompt por Stage').item.json;\nconst gptData = $input.first().json;\n\nlet respostaGPT = gptData?.message?.content\n  || gptData?.choices?.[0]?.message?.content\n  || 'Olá! Sou a Camila da Jairo Mec 😊 Como posso ajudar com seu câmbio?';\n\nrespostaGPT = respostaGPT.replace(/\\[MOVER_PARA_ATENDIMENTO\\]/gi, '').trim();\n\nconst respostaOriginal = gptData?.message?.content || '';\nlet novoStage = dadosPrompt.novoStage;\n\nif (dadosPrompt.stage === 'BOAS_VINDAS' && respostaOriginal.includes('[MOVER_PARA_ATENDIMENTO]')) {\n  novoStage = 'ATENDIMENTO';\n}\n\nreturn [{\n  json: {\n    phone: dadosPrompt.phone,\n    clienteId: dadosPrompt.clienteId,\n    userMessage: dadosPrompt.userMessage,\n    respostaGPT,\n    novoStage,\n    stage: dadosPrompt.stage\n  }\n}];"
+      },
+      "id": "3c2fce5b-f459-478a-85d9-42a53297462d",
+      "name": "Extrair Resposta GPT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3552,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $('Extrair Resposta GPT').item.json;\nconst payload = [\n  { cliente_id: resp.clienteId, role: 'user',      conteudo: resp.userMessage  || '' },\n  { cliente_id: resp.clienteId, role: 'assistant', conteudo: resp.respostaGPT || '' }\n];\nreturn [{\n  json: {\n    bodyStr: JSON.stringify(payload),\n    phone:        resp.phone,\n    clienteId:    resp.clienteId,\n    userMessage:  resp.userMessage,\n    respostaGPT:  resp.respostaGPT,\n    novoStage:    resp.novoStage,\n    stage:        resp.stage\n  }\n}];"
+      },
+      "id": "b5cfb346-598d-4a0e-8afb-97ee5a025533",
+      "name": "Preparar Salvar Mensagens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3328,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/jairomec_mensagens",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.bodyStr }}",
+        "options": {}
+      },
+      "id": "2f63b7d3-5808-4d29-96b3-0d0987c730c5",
+      "name": "Salvar Mensagens no Histórico",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -3104,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $('Preparar Salvar Mensagens').item.json.novoStage }}",
+              "operation": "notEqual",
+              "value2": "={{ $('Preparar Salvar Mensagens').item.json.stage }}"
+            }
+          ]
+        }
+      },
+      "id": "9857613f-114a-4ade-9389-d0f8d8daae90",
+      "name": "Stage Mudou?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -3104,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/jairomec_clientes",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{ $('Preparar Salvar Mensagens').item.json.clienteId }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ stage: $('Preparar Salvar Mensagens').item.json.novoStage }) }}",
+        "options": {}
+      },
+      "id": "04b710a4-d4ce-44e6-9d45-2d7e8e959853",
+      "name": "Atualizar Stage do Cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2880,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "input": "={{ $('Extrair Resposta GPT').item.json.respostaGPT }}",
+        "voice": "nova",
+        "options": {}
+      },
+      "id": "a61e8c3c-5c90-419e-b1fb-d44efc9f3a0f",
+      "name": "Gerar Áudio TTS",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        -3328,
+        -96
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ID_CREDENCIAL_OPENAI",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "binaryToPropery",
+        "destinationKey": "base64",
+        "options": {}
+      },
+      "id": "aa2e9afd-d16a-46b8-8dcc-804febb1d910",
+      "name": "Extract from File",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -3104,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "messages-api",
+        "operation": "send-audio",
+        "instanceName": "jairomec",
+        "remoteJid": "={{ $('Extrair Resposta GPT').item.json.phone }}",
+        "media": "={{ $json.base64 }}",
+        "options_message": {}
+      },
+      "id": "5e5fd9bc-af20-41e9-ac98-d156e937b343",
+      "name": "Enviar Áudio WhatsApp",
+      "type": "n8n-nodes-evolution-api.evolutionApi",
+      "typeVersion": 1,
+      "position": [
+        -2880,
+        -96
+      ],
+      "credentials": {
+        "evolutionApi": {
+          "id": "ID_CREDENCIAL_EVOLUTION",
+          "name": "Evolution account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "messages-api",
+        "instanceName": "jairomec",
+        "remoteJid": "={{ $('Extrair Resposta GPT').item.json.phone }}",
+        "messageText": "={{ $('Extrair Resposta GPT').item.json.respostaGPT }}",
+        "options_message": {}
+      },
+      "id": "b8d5bb01-dfb1-4bc9-95ed-30f6fa7a4056",
+      "name": "Enviar Texto",
+      "type": "n8n-nodes-evolution-api.evolutionApi",
+      "typeVersion": 1,
+      "position": [
+        -2656,
+        -96
+      ],
+      "credentials": {
+        "evolutionApi": {
+          "id": "ID_CREDENCIAL_EVOLUTION",
+          "name": "Evolution account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"ok\" }",
+        "options": {}
+      },
+      "id": "323d264e-b31f-4949-b774-c1c04e770c28",
+      "name": "Responder Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -2432,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "jairomec",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "140f9b95-654d-44c5-bd61-7d63d58e5ea2",
+      "name": "Webhook Evolution API",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -6848,
+        112
+      ],
+      "webhookId": "condados-webhook-001"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Extrair Dados da Mensagem": {
+      "main": [
+        [
+          {
+            "node": "É Áudio?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É Áudio?": {
+      "main": [
+        [
+          {
+            "node": "Convert to File1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "É Imagem ou PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File1": {
+      "main": [
+        [
+          {
+            "node": "Whisper Transcrever",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Whisper Transcrever": {
+      "main": [
+        [
+          {
+            "node": "Unificar Transcrição",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unificar Transcrição": {
+      "main": [
+        [
+          {
+            "node": "Merge Texto+Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É Imagem ou PDF?": {
+      "main": [
+        [
+          {
+            "node": "Preparar Vision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Texto+Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Vision": {
+      "main": [
+        [
+          {
+            "node": "GPT-4o Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT-4o Vision": {
+      "main": [
+        [
+          {
+            "node": "Unificar Análise Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unificar Análise Vision": {
+      "main": [
+        [
+          {
+            "node": "Merge Texto+Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Texto+Audio": {
+      "main": [
+        [
+          {
+            "node": "Buscar Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar Cliente": {
+      "main": [
+        [
+          {
+            "node": "Cliente Existe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cliente Existe?": {
+      "main": [
+        [
+          {
+            "node": "Cadastrar Novo Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unificar Dados do Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cadastrar Novo Cliente": {
+      "main": [
+        [
+          {
+            "node": "Unificar Dados do Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unificar Dados do Cliente": {
+      "main": [
+        [
+          {
+            "node": "Buscar Histórico",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar Histórico": {
+      "main": [
+        [
+          {
+            "node": "Montar Prompt por Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar Prompt por Stage": {
+      "main": [
+        [
+          {
+            "node": "GPT-4.1 Mini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT-4.1 Mini": {
+      "main": [
+        [
+          {
+            "node": "Extrair Resposta GPT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair Resposta GPT": {
+      "main": [
+        [
+          {
+            "node": "Preparar Salvar Mensagens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Salvar Mensagens": {
+      "main": [
+        [
+          {
+            "node": "Salvar Mensagens no Histórico",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Stage Mudou?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gerar Áudio TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage Mudou?": {
+      "main": [
+        [
+          {
+            "node": "Atualizar Stage do Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gerar Áudio TTS": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Enviar Áudio WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Áudio WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Enviar Texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Texto": {
+      "main": [
+        [
+          {
+            "node": "Responder Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Evolution API": {
+      "main": [
+        [
+          {
+            "node": "Extrair Dados da Mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "d6a11859-9f05-49d1-b31e-180a917fb547",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "SEU_N8N_INSTANCE_ID"
+  },
+  "id": "gD1L6fl2TbZ4s9Og",
+  "tags": []
+}

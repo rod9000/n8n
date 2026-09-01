@@ -1,0 +1,584 @@
+{
+  "name": "OnVending - Agente IA WhatsApp",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "onvending",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000001",
+      "name": "Webhook Evolution API",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [-6848, 112],
+      "webhookId": "onvending-webhook-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst data = body.data || body;\nconst message = data.message || {};\n\nconst phone = (data.key?.remoteJid || body.remoteJid || '').replace('@s.whatsapp.net', '').replace('@c.us', '');\nconst pushName = data.pushName || body.pushName || 'Cliente';\nconst messageId = data.key?.id || body.messageId || '';\n\nconst isAudio = !!(message.audioMessage || message.pttMessage);\nconst isImage = !!(message.imageMessage);\nconst isDocument = !!(message.documentMessage);\nconst isMedia = isImage || isDocument;\n\nconst mediaBase64 = (isImage || isDocument) ? (message.base64 || data.base64 || body.base64 || '') : '';\nconst mediaMimeType = message.imageMessage?.mimetype || message.documentMessage?.mimetype || 'image/jpeg';\nconst mediaCaption = message.imageMessage?.caption || message.documentMessage?.caption || '';\nconst mediaFileName = message.documentMessage?.fileName || '';\n\nconst audioBase64 = isAudio ? (message.base64 || data.base64 || body.base64 || message.audioMessage?.base64 || '') : '';\nconst audioUrl = message.audioMessage?.url || message.pttMessage?.url || '';\n\nconst text = message.conversation || message.extendedTextMessage?.text || body.text || '';\n\nif (!phone || phone.includes('-')) {\n  throw new Error('Mensagem ignorada: vazia ou de grupo');\n}\n\nreturn [{\n  json: {\n    phone,\n    text,\n    messageId,\n    pushName,\n    isAudio,\n    isImage,\n    isDocument,\n    isMedia,\n    audioUrl,\n    audioBase64,\n    mediaBase64,\n    mediaMimeType,\n    mediaCaption,\n    mediaFileName\n  }\n}];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000002",
+      "name": "Extrair Dados da Mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-6592, 96],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isAudio }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-0000-0000-000000000003",
+      "name": "E Audio?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [-6368, 96]
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "audioBase64",
+        "options": {
+          "fileName": "audio.mp3",
+          "mimeType": "audio/mpeg"
+        }
+      },
+      "id": "a1000000-0000-0000-0000-000000000004",
+      "name": "Convert to File1",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [-6144, 32]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=SUA_GOOGLE_API_KEY",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ inlineData: { mimeType: 'audio/mp3', data: $json.audioBase64 } }, { text: 'Transcreva este audio em portugues brasileiro. Retorne APENAS o texto transcrito, sem adicionais.' }] }] }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000005",
+      "name": "Gemini Transcrever",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-5920, 32]
+    },
+    {
+      "parameters": {
+        "jsCode": "const geminiData = $input.first().json;\nconst dadosOriginais = $('Extrair Dados da Mensagem').item.json;\nconst textoTranscrito = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || geminiData?.text || '';\nreturn [{\n  json: {\n    phone: dadosOriginais.phone,\n    pushName: dadosOriginais.pushName,\n    text: textoTranscrito,\n    messageId: dadosOriginais.messageId,\n    isAudio: true\n  }\n}];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000006",
+      "name": "Unificar Transcricao",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-5696, 32]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isMedia }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-0000-0000-000000000007",
+      "name": "E Imagem ou PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [-6368, 336]
+    },
+    {
+      "parameters": {
+        "jsCode": "const dados = $input.first().json;\nconst mediaBase64 = dados.mediaBase64 || '';\nconst mediaMimeType = dados.mediaMimeType || 'image/jpeg';\nconst mediaCaption = dados.mediaCaption || '';\nconst mediaFileName = dados.mediaFileName || '';\nconst isDocument = dados.isDocument;\n\nconst isPDF = isDocument && (mediaMimeType === 'application/pdf' || (mediaFileName || '').toLowerCase().endsWith('.pdf'));\n\nlet promptText;\nif (isPDF) {\n  promptText = mediaCaption ? `Cliente enviou arquivo com mensagem: \"${mediaCaption}\". Analise e descreva o que ve relacionado a vending machines ou o local.` : 'Analise este documento e descreva o que ve relacionado a vending machines ou infraestrutura.';\n} else {\n  promptText = mediaCaption ? `Cliente enviou imagem com mensagem: \"${mediaCaption}\". Descreva o que ve: espaco disponivel, tomadas, infraestrutura para maquina de venda automatica.` : 'Analise esta imagem e descreva o que ve: espaco disponivel, infraestrutura, condicoes para instalar uma vending machine.';\n}\n\nconst geminiBody = {\n  contents: [{\n    parts: [\n      { inlineData: { mimeType: mediaMimeType, data: mediaBase64 } },\n      { text: `Voce e um consultor tecnico especialista em vending machines analisando imagens de ambientes. Descreva tecnicamente: espaco disponivel, condicoes de instalacao, necessidade de eletrica/agua, ponto de venda ideal, altura e largura disponivel. Seja especifico e objetivo. Responda em portugues.\\n\\n${promptText}` }\n    ]\n  }]\n};\n\nreturn [{ json: { ...dados, visionBodyStr: JSON.stringify(geminiBody) } }];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000008",
+      "name": "Preparar Vision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-6144, 336]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=SUA_GOOGLE_API_KEY",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ $json.visionBodyStr }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000009",
+      "name": "Gemini Vision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-5920, 336]
+    },
+    {
+      "parameters": {
+        "jsCode": "const visionData = $input.first().json;\nconst dadosOriginais = $('Extrair Dados da Mensagem').item.json;\nconst rawContent = visionData?.candidates?.[0]?.content?.parts?.[0]?.text || '';\n\nconst textoEnriquecido = `[CLIENTE ENVIOU ${dadosOriginais.isDocument ? 'ARQUIVO' : 'IMAGEM'}]\\nAnalise tecnica: ${rawContent}${dadosOriginais.mediaCaption ? `\\nMensagem junto a imagem: \"${dadosOriginais.mediaCaption}\"` : ''}`;\n\nreturn [{\n  json: {\n    phone: dadosOriginais.phone,\n    pushName: dadosOriginais.pushName,\n    text: textoEnriquecido,\n    messageId: dadosOriginais.messageId,\n    isAudio: false,\n    isImage: dadosOriginais.isImage,\n    isDocument: dadosOriginais.isDocument,\n    isMedia: true\n  }\n}];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000010",
+      "name": "Unificar Analise Vision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-5696, 336]
+    },
+    {
+      "parameters": {
+        "jsCode": "let dadosFinal;\ntry {\n  dadosFinal = $('Unificar Analise Vision').item.json;\n  if (dadosFinal) return [{ json: dadosFinal }];\n} catch(e) {}\ntry {\n  dadosFinal = $('Unificar Transcricao').item.json;\n  if (dadosFinal) return [{ json: dadosFinal }];\n} catch(e) {}\ndadosFinal = $('Extrair Dados da Mensagem').item.json;\nreturn [{ json: dadosFinal }];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000011",
+      "name": "Merge Texto+Audio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-5472, 96]
+    },
+    {
+      "parameters": {
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/onvending_clientes",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "telefone", "value": "=eq.{{ $json.phone }}" },
+            { "name": "select", "value": "id,nome,telefone,stage,empresa,tipo_pessoa,visita_agendada,data_visita" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Authorization", "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000012",
+      "name": "Buscar Cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-5248, 96],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ Array.isArray($json) ? $json.length : ($json.id ? 1 : 0) }}",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-0000-0000-000000000013",
+      "name": "Cliente Existe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [-5024, 96],
+      "notes": "TRUE = NAO existe, cadastra | FALSE = JA existe"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/onvending_clientes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Authorization", "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ nome: $('Merge Texto+Audio').item.json.pushName, telefone: $('Merge Texto+Audio').item.json.phone, stage: 'BOAS_VINDAS' }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000014",
+      "name": "Cadastrar Novo Cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-4800, 176]
+    },
+    {
+      "parameters": {
+        "jsCode": "const extrair = $('Merge Texto+Audio').item.json;\nlet clienteData;\ntry {\n  const novoResp = $('Cadastrar Novo Cliente').item.json;\n  const arr = Array.isArray(novoResp) ? novoResp : [novoResp];\n  if (arr.length > 0 && arr[0].id) clienteData = arr[0];\n} catch(e) {}\nif (!clienteData) {\n  const existenteResp = $('Buscar Cliente').item.json;\n  const arr = Array.isArray(existenteResp) ? existenteResp : [existenteResp];\n  clienteData = arr.length > 0 ? arr[0] : {};\n}\nreturn [{\n  json: {\n    phone: extrair.phone,\n    pushName: extrair.pushName,\n    userMessage: extrair.text,\n    isAudio: extrair.isAudio || false,\n    isMedia: extrair.isMedia || false,\n    clienteId: clienteData?.id,\n    nomeCliente: clienteData?.nome || extrair.pushName,\n    stage: clienteData?.stage || 'BOAS_VINDAS',\n    empresa: clienteData?.empresa || '',\n    tipoPessoa: clienteData?.tipo_pessoa || '',\n    visitaAgendada: clienteData?.visita_agendada || false,\n    dataVisita: clienteData?.data_visita || ''\n  }\n}];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000015",
+      "name": "Unificar Dados do Cliente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4576, 96]
+    },
+    {
+      "parameters": {
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/onvending_mensagens",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "cliente_id", "value": "=eq.{{ $json.clienteId }}" },
+            { "name": "select", "value": "role,conteudo" },
+            { "name": "order", "value": "criado_em.asc" },
+            { "name": "limit", "value": "50" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Authorization", "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000016",
+      "name": "Buscar Historico",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-4352, 96],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const cliente = $('Unificar Dados do Cliente').item.json;\nconst rawInput = $input.all();\nlet historico = [];\nif (rawInput.length === 1 && Array.isArray(rawInput[0].json)) {\n  historico = rawInput[0].json;\n} else {\n  historico = rawInput.map(i => i.json).filter(i => i && i.role);\n}\n\nconst stage = cliente.stage;\nconst nomeCliente = cliente.nomeCliente || cliente.pushName || 'voce';\n\nconst prompts = {\n  BOAS_VINDAS: `Voce e o Lucas da OnVending - especialista em vending machines\\n\\nINFORMACOES DA EMPRESA:\\n- Empresa: OnVending\\n- Especialidade: Venda e locacao de maquinas de venda automatica\\n- Produtos: Bebidas (cafe, refrigerantes, sucos, agua) e Comidas (snacks, sanduiches, paes, salgados)\\n- Atendemos todo o Brasil\\n- Instagram: @onvending\\n\\nMODELOS DE MAQUINAS:\\n- Basica (12 posicoes) - ideal para ambientes pequenos\\n- Media (20 posicoes) - para escritorios e empresas\\n- Premium (30 posicoes) - para grandes corporacoes, hospitais, escolas\\n- Combo (bebidas + comidas) - maxima variedade\\n\\nTIPO DE NEGOCIO:\\n- COMPRA: Maquinas novas com garantia de 12 meses\\n- LOCACAO: A partir de R$ 299/mes (inclui manutencao e reposicao)\\n\\nPERSONALIDADE:\\n- Seja simpatico, caloroso e profissional\\n- Use o nome do cliente: ${nomeCliente}\\n- Use emojis com moderacao\\n\\nINSTRUCAO:\\nApresente-se como Lucas da OnVending e pergunte se o cliente quer COMPRAR ou ALUGAR uma maquina. Pergunte tambem o tipo de ambiente (escritorio, fabrica, escola, hospital, academia, etc.).\\nSe o cliente mencionar orcamento, precos ou demonstrar interesse: [MOVER_PARA_ATENDIMENTO]\\n\\nREGRAS:\\n- Responda APENAS sobre vending machines e produtos oferecidos\\n- NUNCA mencione que e virtual ou IA\\n- NUNCA mencione o numero de telefone proativamente\\n- Nao invente precos diferentes dos informados acima`,\n\n  ATENDIMENTO: `Voce e o Lucas da OnVending - especialista em vending machines\\n\\nINFORMACOES DA EMPRESA:\\n- Venda e locacao de maquinas de venda automatica\\n- Bebidas: cafe, refrigerantes, sucos, agua\\n- Comidas: snacks, sanduiches, paes, salgados\\n- Atendemos todo o Brasil\\n\\nMODELOS:\\n- Basica (12 posicoes): R$ 4.500 (compra)\\n- Media (20 posicoes): R$ 7.800 (compra)\\n- Premium (30 posicoes): R$ 12.000 (compra)\\n- Combo (bebidas + comidas): R$ 15.000 (compra)\\n- LOCACAO: A partir de R$ 299/mes\\n\\nCONTEXTO:\\nCliente: ${nomeCliente}\\nHistorico: ${historico.map(h => h.role + ': ' + h.conteudo).join('\\n')}\\n\\nINSTRUCAO:\\nAnalise o que o cliente precisa e colete as seguintes informacoes:\\n1. Tipo de maquina desejada (refrigerante, cafe, combo, etc.)\\n2. Quantidade de maquinas\\n3. Localizacao do ambiente (escritorio, fabrica, escola, hospital, academia, shopping, etc.)\\n4. Quantidade de pessoas que usaro\\n5. Se prefere COMPRA ou LOCACAO\\n6. Se ha necessidade de produtos especificos (marcas, tipos)\\n\\nQuando tiver informacoes suficientes para um orcamento, use a marcacao: [MOVER_PARA_ORCAMENTO]\\n\\nREGRAS:\\n- NUNCA mencione que e virtual ou IA\\n- Seja objetivo e profissional\\n- Nao invente informacoes que nao tem`,\n\n  ORCAMENTO: `Voce e o Lucas da OnVending - especialista em vending machines\\n\\nINFORMACOES DA EMPRESA:\\n- Venda e locacao de maquinas de venda automatica\\n- Atendemos todo o Brasil\\n\\nMODELOS E PRECOS:\\nMAQUINAS PARA COMPRA:\\n- Basica (12 posicoes): R$ 4.500 - ideal para ambientes com ate 30 pessoas\\n- Media (20 posicoes): R$ 7.800 - para escritorios com ate 80 pessoas\\n- Premium (30 posicoes): R$ 12.000 - para grandes empresas, hospitais, escolas\\n- Combo (bebidas + comidas): R$ 15.000 - maxima variedade\\n\\nLOCACAO:\\n- Basica: R$ 299/mes\\n- Media: R$ 499/mes\\n- Premium: R$ 799/mes\\n- Combo: R$ 999/mes\\n- Inclui: manutencao, reposicao de produtos e suporte tecnico\\n\\nCONTEXTO:\\nCliente: ${nomeCliente}\\nHistorico: ${historico.map(h => h.role + ': ' + h.conteudo).join('\\n')}\\n\\nINSTRUCAO:\\nApresente a opcao ideal para o cliente com base nas informacoes coletadas. Explique as vantagens de compra vs locacao.\\nSe o cliente quiser agendar uma visita tecnica ou entrega, use: [MOVER_PARA_AGENDAMENTO] e [AGENDAR: data e horario que o cliente combinou]\\nSe o cliente ainda tiver duvidas, responda normalmente.\\n\\nREGRAS:\\n- NUNCA mencione que e virtual ou IA\\n- Seja transparente com precos\\n- Nao ofereca descontos nao autorizados`,\n\n  AGENDAMENTO: `Voce e o Lucas da OnVending - especialista em vending machines\\n\\nINFORMACOES:\\n- Realizamos visitas tecnicas para avaliacao do local\\n- Entrega e instalacao em todo o Brasil\\n- Instalacao e gratuita na compra\\n- Manutencao preventiva mensal na locacao\\n\\nCONTEXTO:\\nCliente: ${nomeCliente}\\nHistorico: ${historico.map(h => h.role + ': ' + h.conteudo).join('\\n')}\\n\\nINSTRUCAO:\\nConfirme o agendamento com o cliente. Pergunte:\\n1. Melhor dia e horario para a visita/entrega\\n2. Endereco completo\\n3. Contato para referencia\\n\\nOfereca visita tecnica para avaliar o local e indicar o melhor modelo.\\nUse: [AGENDAR: data e horario exatamente como o cliente combinou]\\n\\nREGRAS:\\n- NUNCA mencione que e virtual ou IA\\n- Confirme todos os dados antes de finalizar\\n- Seja atencioso e profissional`\n};\n\nlet systemPrompt = prompts[stage] || prompts.BOAS_VINDAS;\nlet novoStage = stage;\n\nif (stage === 'BOAS_VINDAS' && historico.length > 1) {\n  const ultimaMsg = historico[historico.length - 1]?.conteudo || '';\n  if (ultimaMsg.toLowerCase().includes('orcamento') || ultimaMsg.toLowerCase().includes('preco') || ultimaMsg.toLowerCase().includes('quanto')) {\n    novoStage = 'ATENDIMENTO';\n  }\n}\n\nconst mensagensCompletas = [{\n  role: 'user',\n  content: `Mensagem do cliente: ${$('Unificar Dados do Cliente').item.json.userMessage}`\n}];\n\nreturn [{\n  json: {\n    systemPrompt,\n    mensagensCompletas,\n    stage,\n    novoStage,\n    phone: cliente.phone,\n    clienteId: cliente.clienteId\n  }\n}];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000017",
+      "name": "Montar Prompt por Stage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4128, 96]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=SUA_GOOGLE_API_KEY",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ role: 'user', parts: [{ text: $json.systemPrompt + '\\n\\n---\\n\\nMensagem do cliente: ' + $json.mensagensCompletas[0].content }] }}], generationConfig: { maxOutputTokens: 1500, temperature: 0.1 } }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000018",
+      "name": "Gemini Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-3904, 96]
+    },
+    {
+      "parameters": {
+        "jsCode": "const dadosPrompt = $('Montar Prompt por Stage').item.json;\nconst geminiData = $input.first().json;\n\nlet respostaGPT = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text\n  || 'Ola! Sou o Lucas da OnVending. Como posso ajudar com sua vending machine?';\n\nconst respostaOriginal = respostaGPT;\nlet novoStage = dadosPrompt.novoStage;\nconst agendar = /\\[AGENDAR:\\s*([^\\]]+)\\]/i.test(respostaGPT);\nconst match = respostaGPT.match(/\\[AGENDAR:\\s*([^\\]]+)\\]/i);\nconst dataVisitaTexto = match ? match[1].trim() : '';\n\nrespostaGPT = respostaGPT\n  .replace(/\\[MOVER_PARA_ATENDIMENTO\\]/gi, '')\n  .replace(/\\[MOVER_PARA_ORCAMENTO\\]/gi, '')\n  .replace(/\\[MOVER_PARA_AGENDAMENTO\\]/gi, '')\n  .replace(/\\[AGENDAR:[^\\]]+\\]/gi, '')\n  .trim();\n\nif (dadosPrompt.stage === 'BOAS_VINDAS' && respostaOriginal.includes('[MOVER_PARA_ATENDIMENTO]')) {\n  novoStage = 'ATENDIMENTO';\n} else if (dadosPrompt.stage === 'ATENDIMENTO' && respostaOriginal.includes('[MOVER_PARA_ORCAMENTO]')) {\n  novoStage = 'ORCAMENTO';\n} else if ((dadosPrompt.stage === 'ATENDIMENTO' || dadosPrompt.stage === 'ORCAMENTO') && respostaOriginal.includes('[MOVER_PARA_AGENDAMENTO]')) {\n  novoStage = 'AGENDAMENTO';\n}\n\nif (agendar && novoStage !== 'AGENDAMENTO') {\n  novoStage = 'AGENDAMENTO';\n}\n\nreturn [{\n  json: {\n    phone: dadosPrompt.phone,\n    clienteId: dadosPrompt.clienteId,\n    userMessage: dadosPrompt.userMessage,\n    respostaGPT,\n    stage: dadosPrompt.stage,\n    novoStage,\n    agendar,\n    dataVisitaTexto\n  }\n}];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000019",
+      "name": "Extrair Resposta Gemini",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3552, 96]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $('Extrair Resposta Gemini').item.json;\nconst payload = [\n  { cliente_id: resp.clienteId, role: 'user',      conteudo: resp.userMessage  || '' },\n  { cliente_id: resp.clienteId, role: 'assistant', conteudo: resp.respostaGPT || '' }\n];\nreturn [{\n  json: {\n    bodyStr: JSON.stringify(payload),\n    phone:           resp.phone,\n    clienteId:       resp.clienteId,\n    userMessage:     resp.userMessage,\n    respostaGPT:     resp.respostaGPT,\n    stage:           resp.stage,\n    novoStage:       resp.novoStage,\n    agendar:         resp.agendar,\n    dataVisitaTexto: resp.dataVisitaTexto\n  }\n}];"
+      },
+      "id": "a1000000-0000-0000-0000-000000000020",
+      "name": "Preparar Salvar Mensagens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3328, 96]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/onvending_mensagens",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Authorization", "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.bodyStr }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000021",
+      "name": "Salvar Mensagens no Historico",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-3104, 96]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $('Preparar Salvar Mensagens').item.json.novoStage }}",
+              "operation": "notEqual",
+              "value2": "={{ $('Preparar Salvar Mensagens').item.json.stage }}"
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-0000-0000-000000000022",
+      "name": "Stage Mudou?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [-3104, 288]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/onvending_clientes",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('Preparar Salvar Mensagens').item.json.clienteId }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Authorization", "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ stage: $('Preparar Salvar Mensagens').item.json.novoStage }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000023",
+      "name": "Atualizar Stage do Cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-2880, 288]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $('Preparar Salvar Mensagens').item.json.agendar }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-0000-0000-000000000024",
+      "name": "Agendou Visita?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [-3104, 448]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/onvending_visitas",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Authorization", "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ cliente_id: $('Preparar Salvar Mensagens').item.json.clienteId, tipo: 'visita_tecnica', data_hora: $('Preparar Salvar Mensagens').item.json.dataVisitaTexto, status: 'AGENDADA' }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000025",
+      "name": "Salvar Visita",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-2880, 448]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://SEU_PROJETO.supabase.co/rest/v1/onvending_clientes",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('Preparar Salvar Mensagens').item.json.clienteId }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Authorization", "value": "Bearer SUA_SUPABASE_SERVICE_ROLE_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ visita_agendada: true, data_visita: $('Preparar Salvar Mensagens').item.json.dataVisitaTexto }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000026",
+      "name": "Atualizar Cliente Visita Agendada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-2656, 448]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://SUA_EVOLUTION_URL/message/sendText/PROTOTIPO",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "SUA_EVOLUTION_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Extrair Resposta Gemini').item.json.phone + '@s.whatsapp.net', text: $('Extrair Resposta Gemini').item.json.respostaGPT }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000027",
+      "name": "Enviar Texto",
+      "type": "n8n-nodes-evolution-api.evolutionApi",
+      "typeVersion": 4,
+      "position": [-2880, 96]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"ok\" }",
+        "options": {}
+      },
+      "id": "a1000000-0000-0000-0000-000000000028",
+      "name": "Responder Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-2656, 96]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Evolution API": {
+      "main": [[{ "node": "Extrair Dados da Mensagem", "type": "main", "index": 0 }]]
+    },
+    "Extrair Dados da Mensagem": {
+      "main": [[{ "node": "E Audio?", "type": "main", "index": 0 }]]
+    },
+    "E Audio?": {
+      "main": [
+        [{ "node": "Convert to File1", "type": "main", "index": 0 }],
+        [{ "node": "E Imagem ou PDF?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Convert to File1": {
+      "main": [[{ "node": "Gemini Transcrever", "type": "main", "index": 0 }]]
+    },
+    "Gemini Transcrever": {
+      "main": [[{ "node": "Unificar Transcricao", "type": "main", "index": 0 }]]
+    },
+    "Unificar Transcricao": {
+      "main": [[{ "node": "Merge Texto+Audio", "type": "main", "index": 0 }]]
+    },
+    "E Imagem ou PDF?": {
+      "main": [
+        [{ "node": "Preparar Vision", "type": "main", "index": 0 }],
+        [{ "node": "Merge Texto+Audio", "type": "main", "index": 0 }]
+      ]
+    },
+    "Preparar Vision": {
+      "main": [[{ "node": "Gemini Vision", "type": "main", "index": 0 }]]
+    },
+    "Gemini Vision": {
+      "main": [[{ "node": "Unificar Analise Vision", "type": "main", "index": 0 }]]
+    },
+    "Unificar Analise Vision": {
+      "main": [[{ "node": "Merge Texto+Audio", "type": "main", "index": 0 }]]
+    },
+    "Merge Texto+Audio": {
+      "main": [[{ "node": "Buscar Cliente", "type": "main", "index": 0 }]]
+    },
+    "Buscar Cliente": {
+      "main": [[{ "node": "Cliente Existe?", "type": "main", "index": 0 }]]
+    },
+    "Cliente Existe?": {
+      "main": [
+        [{ "node": "Cadastrar Novo Cliente", "type": "main", "index": 0 }],
+        [{ "node": "Unificar Dados do Cliente", "type": "main", "index": 0 }]
+      ]
+    },
+    "Cadastrar Novo Cliente": {
+      "main": [[{ "node": "Unificar Dados do Cliente", "type": "main", "index": 0 }]]
+    },
+    "Unificar Dados do Cliente": {
+      "main": [[{ "node": "Buscar Historico", "type": "main", "index": 0 }]]
+    },
+    "Buscar Historico": {
+      "main": [[{ "node": "Montar Prompt por Stage", "type": "main", "index": 0 }]]
+    },
+    "Montar Prompt por Stage": {
+      "main": [[{ "node": "Gemini Chat", "type": "main", "index": 0 }]]
+    },
+    "Gemini Chat": {
+      "main": [[{ "node": "Extrair Resposta Gemini", "type": "main", "index": 0 }]]
+    },
+    "Extrair Resposta Gemini": {
+      "main": [[{ "node": "Preparar Salvar Mensagens", "type": "main", "index": 0 }]]
+    },
+    "Preparar Salvar Mensagens": {
+      "main": [
+        [
+          { "node": "Salvar Mensagens no Historico", "type": "main", "index": 0 },
+          { "node": "Stage Mudou?", "type": "main", "index": 0 },
+          { "node": "Agendou Visita?", "type": "main", "index": 0 },
+          { "node": "Enviar Texto", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Stage Mudou?": {
+      "main": [[{ "node": "Atualizar Stage do Cliente", "type": "main", "index": 0 }]]
+    },
+    "Agendou Visita?": {
+      "main": [[{ "node": "Salvar Visita", "type": "main", "index": 0 }]]
+    },
+    "Salvar Visita": {
+      "main": [[{ "node": "Atualizar Cliente Visita Agendada", "type": "main", "index": 0 }]]
+    },
+    "Enviar Texto": {
+      "main": [[{ "node": "Responder Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "b3c4d5e6-f7a8-9012-3456-789012345678",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "SEU_N8N_INSTANCE_ID"
+  },
+  "id": "onvendingwa01",
+  "tags": []
+}
